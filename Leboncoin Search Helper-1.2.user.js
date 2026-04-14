@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Leboncoin Search Helper
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  Ajoute des liens de recherche Google et Argus sur les annonces Leboncoin
+// @version      2.1
+// @description  Adds Google and Argus search links on Leboncoin car listings
 // @author       You
 // @match        https://www.leboncoin.fr/ad/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=leboncoin.fr
@@ -12,8 +12,22 @@
 (function() {
     'use strict';
 
-    // Fonction pour créer un icône SVG
-    function createSVGIcon(pathData, color = '#007bff') {
+    // Criteria to extract: data-qa-id => value is in the SECOND column of the flex row
+    const CAR_CRITERIA_IDS = [
+        'criteria_item_u_car_model',
+        'criteria_item_regdate',
+        'criteria_item_gearbox',
+        'criteria_item_u_car_finition',
+        'criteria_item_u_car_version',
+        'criteria_item_horsepower',
+        'criteria_item_horse_power_din',
+    ];
+
+    // Flag to prevent concurrent injection attempts
+    let injecting = false;
+
+    // Create an SVG icon element
+    function createSVGIcon(pathData, color) {
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.setAttribute('width', '20');
         svg.setAttribute('height', '20');
@@ -26,6 +40,7 @@
         svg.style.marginLeft = '8px';
         svg.style.cursor = 'pointer';
         svg.style.verticalAlign = 'middle';
+        svg.style.flexShrink = '0';
 
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('d', pathData);
@@ -34,285 +49,250 @@
         return svg;
     }
 
-    // Fonction pour vérifier si c'est une annonce de voiture
+    // Check whether the current listing is a car ad
     function isCarAd() {
-        const url = window.location.href;
-        const breadcrumbItems = document.querySelectorAll('[data-testid="breadcrumb-item"]');
-
-        // Vérifier dans l'URL
-        if (url.includes('/voitures/')) {
+        if (window.location.href.includes('/voitures/')) {
             return true;
         }
-
-        // Vérifier dans le fil d'Ariane
-        for (let item of breadcrumbItems) {
+        const breadcrumbItems = document.querySelectorAll('[data-testid="breadcrumb-item"]');
+        for (const item of breadcrumbItems) {
             if (item.textContent.toLowerCase().includes('voitures')) {
                 return true;
             }
         }
-
         return false;
     }
 
-    // Fonction pour extraire le titre de l'annonce
+    // Extract the ad title text
     function getAdTitle() {
-        // Plusieurs sélecteurs possibles selon la version de la page
-        const titleSelectors = [
+        const selectors = [
             'h1[data-testid="ad-title"]',
             'h1[data-test-id="ad-title"]',
             'h1.text-headline-1',
             'h1.text-title-1',
             'h1._1KQme',
-            'h1'
+            'h1',
         ];
-
-        for (let selector of titleSelectors) {
-            const titleElement = document.querySelector(selector);
-            if (titleElement && titleElement.textContent.trim()) {
-                return titleElement.textContent.trim();
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && el.textContent.trim()) {
+                return el.textContent.trim();
             }
         }
-
         return null;
     }
 
-    // Fonction pour extraire une donnée spécifique de la fiche
-    function extractDataFromLabel(labelText) {
-        // Chercher tous les éléments p avec le texte du label
-        const allParagraphs = document.querySelectorAll('p');
-
-        for (let p of allParagraphs) {
-            if (p.textContent.trim() === labelText) {
-                // Chercher l'élément suivant qui contient la valeur
-                let nextElement = p.nextElementSibling;
-
-                // Parcourir les éléments suivants pour trouver la valeur
-                while (nextElement) {
-                    const valueElement = nextElement.querySelector('p.text-body-1, p[title]');
-                    if (valueElement) {
-                        return valueElement.textContent.trim() || valueElement.getAttribute('title');
-                    }
-                    nextElement = nextElement.nextElementSibling;
-                }
-
-                // Alternative: chercher dans le parent
-                const parent = p.parentElement;
-                if (parent) {
-                    const valueInParent = parent.querySelector('p.text-body-1, p[title]');
-                    if (valueInParent && valueInParent !== p) {
-                        return valueInParent.textContent.trim() || valueInParent.getAttribute('title');
-                    }
-                }
-            }
-        }
-
-        return null;
-    }
-
-    // Fonction pour extraire les données additionnelles pour les voitures
-    function getAdditionalCarData() {
-        const dataToExtract = [
-            'Année modèle',
-            'Finition Constructeur',
-            'Version Constructeur',
-            'Puissance DIN'
-        ];
-
-        const extractedData = [];
-
-        for (let label of dataToExtract) {
-            const value = extractDataFromLabel(label);
-            if (value) {
-                extractedData.push(value);
-            }
-        }
-
-        return extractedData;
-    }
-
-    // Fonction pour vérifier si une donnée est déjà présente dans le titre
-    function isDataInTitle(data, title) {
-        const normalizedTitle = title.toLowerCase();
-        const normalizedData = data.toLowerCase();
-
-        // Recherche exacte et recherche par mots
-        return normalizedTitle.includes(normalizedData) ||
-               normalizedData.split(' ').some(word =>
-                   word.length > 2 && normalizedTitle.includes(word)
-               );
-    }
-
-    // Fonction pour créer la requête de recherche enrichie
-    function createEnrichedSearchQuery(title) {
-        if (!isCarAd()) {
-            return title;
-        }
-
-        const additionalData = getAdditionalCarData();
-        const newDataToAdd = [];
-
-        // Filtrer les données qui ne sont pas déjà dans le titre
-        for (let data of additionalData) {
-            if (!isDataInTitle(data, title)) {
-                newDataToAdd.push(data);
-            }
-        }
-
-        // Construire la requête finale
-        let searchQuery = title;
-        if (newDataToAdd.length > 0) {
-            searchQuery += ' ' + newDataToAdd.join(' ');
-        }
-
-        return searchQuery;
-    }
-
-    // Fonction pour trouver l'élément titre
+    // Find the title DOM element
     function getTitleElement() {
-        const titleSelectors = [
+        const selectors = [
             'h1[data-testid="ad-title"]',
             'h1[data-test-id="ad-title"]',
             'h1.text-headline-1',
             'h1.text-title-1',
             'h1._1KQme',
-            'h1'
+            'h1',
         ];
-
-        for (let selector of titleSelectors) {
-            const titleElement = document.querySelector(selector);
-            if (titleElement && titleElement.textContent.trim()) {
-                return titleElement;
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && el.textContent.trim()) {
+                return el;
             }
         }
-
         return null;
     }
 
-    // Fonction pour créer le lien Google général
-    function createGoogleSearchLink(title) {
-        const googleIcon = createSVGIcon('m15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4m-5-4l5-5-5-5m-5 9h11', '#4285f4');
+    // Extract the VALUE (right column) from a criteria block by its data-qa-id.
+    // Structure: [data-qa-id="..."] contains two flex children:
+    //   - first child  = label column  (icon + <p class="text-caption">Label</p>)
+    //   - second child = value column  (<div> containing <p class="font-bold" title="VALUE">VALUE</p>)
+    function extractCriteriaValue(qaId) {
+        const container = document.querySelector(`[data-qa-id="${qaId}"]`);
+        if (!container) {
+            return null;
+        }
 
-        googleIcon.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            // CORRIGÉ: Ajout des backticks pour template literal
-            const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(title)}`;
-            window.open(searchUrl, '_blank');
-        });
+        // The value column is the second direct child of the flex container
+        const children = container.children;
+        if (children.length < 2) {
+            return null;
+        }
 
-        googleIcon.title = 'Rechercher sur Google';
-        return googleIcon;
+        const valueColumn = children[1];
+
+        // Prefer title attribute on any <p> (handles truncated text)
+        const boldP = valueColumn.querySelector('p[title]');
+        if (boldP) {
+            const title = boldP.getAttribute('title').trim();
+            if (title) {
+                return title;
+            }
+        }
+
+        // Fallback: raw text content of the value column
+        const text = valueColumn.textContent.trim();
+        return text || null;
     }
 
-    // Fonction pour créer le lien Argus
-    function createArgusSearchLink(title) {
-        const argusIcon = createSVGIcon('M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z', '#ff6b35');
-
-        argusIcon.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-
-            // Créer la requête enrichie
-            const enrichedQuery = createEnrichedSearchQuery(title);
-            // CORRIGÉ: Ajout des backticks pour template literal
-            const searchQuery = `${enrichedQuery} fiche argus`;
-            const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`;
-
-            console.log('Recherche Argus:', searchQuery);
-            window.open(searchUrl, '_blank');
+    // Click "Voir les X critères supplémentaires" if not yet expanded
+    function expandCriteriaIfNeeded() {
+        const btn = document.querySelector('button[data-qa-id="criteria_more"]');
+        if (!btn) {
+            return Promise.resolve();
+        }
+        if (btn.textContent.trim().toLowerCase().startsWith('voir moins')) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            btn.click();
+            setTimeout(resolve, 700);
         });
-
-        argusIcon.title = 'Rechercher la fiche Argus';
-        return argusIcon;
     }
 
-    // Fonction pour vérifier si les icônes existent déjà
+    // Check whether a value is already present in the title
+    function isDataInTitle(data, title) {
+        const normTitle = title.toLowerCase();
+        const normData  = data.toLowerCase();
+        if (normTitle.includes(normData)) {
+            return true;
+        }
+        return normData.split(' ').some(
+            word => word.length > 2 && normTitle.includes(word)
+        );
+    }
+
+    // Build the enriched query from title + extracted criteria values
+    function buildEnrichedQuery(title) {
+        const extras = [];
+        for (const qaId of CAR_CRITERIA_IDS) {
+            const value = extractCriteriaValue(qaId);
+            console.log(`[SearchHelper] ${qaId} =>`, value);
+            if (value && !isDataInTitle(value, title)) {
+                extras.push(value);
+            }
+        }
+        return extras.length > 0 ? `${title} ${extras.join(' ')}` : title;
+    }
+
+    // Create the Argus search icon
+    function createArgusIcon(title) {
+        const icon = createSVGIcon(
+            'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z',
+            '#ff6b35'
+        );
+        icon.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const query = `${buildEnrichedQuery(title)} fiche argus`;
+            console.log('[SearchHelper] Argus query:', query);
+            window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
+        });
+        icon.title = 'Rechercher la fiche Argus';
+        return icon;
+    }
+
+    // Create the generic Google search icon
+    function createGoogleIcon(title) {
+        const icon = createSVGIcon(
+            'm15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4m-5-4l5-5-5-5m-5 9h11',
+            '#4285f4'
+        );
+        icon.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            window.open(`https://www.google.com/search?q=${encodeURIComponent(title)}`, '_blank');
+        });
+        icon.title = 'Rechercher sur Google';
+        return icon;
+    }
+
+    // Check whether icons have already been injected
     function iconsAlreadyExist() {
         return document.querySelector('.search-helper-icon') !== null;
     }
 
-    // Fonction principale pour ajouter les icônes
-    function addSearchIcons() {
-        if (iconsAlreadyExist()) {
+    // Main injection function
+    async function addSearchIcons() {
+        if (iconsAlreadyExist() || injecting) {
             return;
         }
+        injecting = true;
 
-        const titleElement = getTitleElement();
-        const adTitle = getAdTitle();
+        try {
+            const titleElement = getTitleElement();
+            const adTitle      = getAdTitle();
 
-        if (!titleElement || !adTitle) {
-            console.log('Titre de l\'annonce non trouvé');
-            return;
+            if (!titleElement || !adTitle) {
+                console.log('[SearchHelper] Title not found.');
+                return;
+            }
+
+            if (isCarAd()) {
+                await expandCriteriaIfNeeded();
+            }
+
+            // Double-check after async wait — another call may have injected in the meantime
+            if (iconsAlreadyExist()) {
+                return;
+            }
+
+            const container = document.createElement('span');
+            container.className = 'search-helper-icon';
+            container.style.cssText = 'display:inline-flex;align-items:center;margin-right:10px;vertical-align:middle;';
+
+            if (isCarAd()) {
+                container.appendChild(createArgusIcon(adTitle));
+            } else {
+                container.appendChild(createGoogleIcon(adTitle));
+            }
+
+            titleElement.insertBefore(container, titleElement.firstChild);
+            console.log('[SearchHelper] Icons injected.');
+        } finally {
+            injecting = false;
         }
-
-        // Créer un conteneur pour les icônes
-        const iconContainer = document.createElement('span');
-        iconContainer.className = 'search-helper-icon';
-        iconContainer.style.marginRight = '10px';
-
-        // Si c'est une annonce de voiture, afficher seulement l'icône Argus
-        if (isCarAd()) {
-            const argusIcon = createArgusSearchLink(adTitle);
-            iconContainer.appendChild(argusIcon);
-        } else {
-            // Pour les autres catégories, afficher l'icône Google général
-            const googleIcon = createGoogleSearchLink(adTitle);
-            iconContainer.appendChild(googleIcon);
-        }
-
-        // Ajouter les icônes avant le titre
-        titleElement.insertBefore(iconContainer, titleElement.firstChild);
-
-        console.log('Icônes de recherche ajoutées');
     }
 
-    // Fonction d'initialisation avec retry
-    function initializeScript() {
+    // Retry loop until the title is available
+    function initScript() {
         let attempts = 0;
-        const maxAttempts = 10;
+        const maxAttempts = 15;
 
-        function tryAddIcons() {
+        function tryInject() {
             attempts++;
-            console.log(`Tentative ${attempts}/${maxAttempts}`);
-
             if (getTitleElement() && getAdTitle()) {
                 addSearchIcons();
             } else if (attempts < maxAttempts) {
-                setTimeout(tryAddIcons, 1000);
+                setTimeout(tryInject, 800);
             } else {
-                console.log('Script abandonné après', maxAttempts, 'tentatives');
+                console.log('[SearchHelper] Giving up after', maxAttempts, 'attempts.');
             }
         }
 
-        tryAddIcons();
+        tryInject();
     }
 
-    // Observer les changements dans le DOM
+    // MutationObserver for SPA navigation (debounced)
+    let observerTimer = null;
     const observer = new MutationObserver(function(mutations) {
-        let shouldCheck = false;
-
-        mutations.forEach(function(mutation) {
+        let hasNewNodes = false;
+        for (const mutation of mutations) {
             if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                shouldCheck = true;
+                hasNewNodes = true;
+                break;
             }
-        });
-
-        if (shouldCheck && !iconsAlreadyExist()) {
-            setTimeout(addSearchIcons, 500);
+        }
+        if (hasNewNodes && !iconsAlreadyExist() && !injecting) {
+            clearTimeout(observerTimer);
+            observerTimer = setTimeout(addSearchIcons, 600);
         }
     });
 
-    // Démarrer l'observation
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
+    observer.observe(document.body, { childList: true, subtree: true });
 
-    // Initialiser le script
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initializeScript);
+        document.addEventListener('DOMContentLoaded', initScript);
     } else {
-        initializeScript();
+        initScript();
     }
 
 })();
