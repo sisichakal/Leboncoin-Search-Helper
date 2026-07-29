@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Leboncoin Search Helper
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  Adds Google and Argus search links on Leboncoin car listings
 // @author       You
 // @match        https://www.leboncoin.fr/ad/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=leboncoin.fr
+// @updateURL    https://raw.githubusercontent.com/sisichakal/Leboncoin-Search-Helper/main/Leboncoin%20Search%20Helper-1.2.user.js
+// @downloadURL  https://raw.githubusercontent.com/sisichakal/Leboncoin-Search-Helper/main/Leboncoin%20Search%20Helper-1.2.user.js
 // @grant        none
 // ==/UserScript==
 
@@ -22,6 +24,23 @@
         'criteria_item_horsepower',
         'criteria_item_horse_power_din',
     ];
+
+    // Patterns to strip from any query part (case-insensitive)
+    const QUERY_BLACKLIST = [
+        /\bct\s+ok\b/i,
+        /garantie\s+\d+\s*mois/i,
+        /très\s+bon\s+état/i,
+    ];
+
+    // Remove blacklisted strings from a value before adding it to the query
+    function sanitiseQueryPart(value) {
+        let result = value;
+        for (const pattern of QUERY_BLACKLIST) {
+            result = result.replace(pattern, '');
+        }
+        // Collapse multiple spaces left by removals
+        return result.replace(/\s{2,}/g, ' ').trim();
+    }
 
     // Flag to prevent concurrent injection attempts
     let injecting = false;
@@ -162,15 +181,21 @@
 
     // Build the enriched query from title + extracted criteria values
     function buildEnrichedQuery(title) {
+        // Sanitise the title itself first
+        const cleanTitle = sanitiseQueryPart(title);
         const extras = [];
         for (const qaId of CAR_CRITERIA_IDS) {
-            const value = extractCriteriaValue(qaId);
-            console.log(`[SearchHelper] ${qaId} =>`, value);
-            if (value && !isDataInTitle(value, title)) {
+            const raw = extractCriteriaValue(qaId);
+            console.log(`[SearchHelper] ${qaId} =>`, raw);
+            if (!raw) {
+                continue;
+            }
+            const value = sanitiseQueryPart(raw);
+            if (value && !isDataInTitle(value, cleanTitle)) {
                 extras.push(value);
             }
         }
-        return extras.length > 0 ? `${title} ${extras.join(' ')}` : title;
+        return extras.length > 0 ? `${cleanTitle} ${extras.join(' ')}` : cleanTitle;
     }
 
     // Create the Argus search icon
