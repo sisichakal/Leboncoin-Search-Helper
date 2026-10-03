@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Leboncoin Search Helper
 // @namespace    http://tampermonkey.net/
-// @version      2.3
-// @description  Adds Google, Argus, Caradisiac, La Centrale and Google AI search links on Leboncoin car listings
+// @version      2.4
+// @description  Adds Google, Argus, Caradisiac, La Centrale, Encycarpedia and Google AI search links on Leboncoin car listings
 // @author       You
 // @match        https://www.leboncoin.fr/ad/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=leboncoin.fr
@@ -62,6 +62,12 @@
             colour:  '#0a4a9f',
             tooltip: 'Rechercher la fiche La Centrale',
             badge:   'LC',
+        },
+        {
+            suffix:  'encycarpedia',
+            colour:  '#2e7d32',
+            tooltip: 'Rechercher la fiche Encycarpedia',
+            badge:   'EN',
         },
     ];
 
