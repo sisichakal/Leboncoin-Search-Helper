@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Leboncoin Search Helper
 // @namespace    http://tampermonkey.net/
-// @version      2.2
-// @description  Adds Google and Argus search links on Leboncoin car listings
+// @version      2.3
+// @description  Adds Google, Argus, Caradisiac, La Centrale and Google AI search links on Leboncoin car listings
 // @author       You
 // @match        https://www.leboncoin.fr/ad/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=leboncoin.fr
@@ -32,6 +32,60 @@
         /très\s+bon\s+état/i,
     ];
 
+    // Selectors used to locate the ad title, most specific first
+    const TITLE_SELECTORS = [
+        'h1[data-testid="ad-title"]',
+        'h1[data-test-id="ad-title"]',
+        'h1.text-headline-1',
+        'h1.text-title-1',
+        'h1._1KQme',
+        'h1',
+    ];
+
+    // Spec-sheet search sources displayed on car ads (array order = display order).
+    // Either "iconPath" (SVG icon) or "badge" (short text label) is used for rendering.
+    const SPEC_SHEET_SOURCES = [
+        {
+            suffix:   'fiche argus',
+            colour:   '#ff6b35',
+            tooltip:  'Rechercher la fiche Argus',
+            iconPath: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z',
+        },
+        {
+            suffix:  'fiche technique caradisiac',
+            colour:  '#e30613',
+            tooltip: 'Rechercher la fiche Caradisiac',
+            badge:   'CA',
+        },
+        {
+            suffix:  'fiche technique la centrale',
+            colour:  '#0a4a9f',
+            tooltip: 'Rechercher la fiche La Centrale',
+            badge:   'LC',
+        },
+    ];
+
+    // Rows requested from Google AI Mode (same layout as the "Informations Techniques" panel)
+    const AI_TABLE_ROWS = [
+        'Longueur / Largeur (format : 4.42m - 1.83m)',
+        'Poids à vide (kg)',
+        'Volume de coffre + volume utile (format : 475L - 1600L, volume utile = banquette rabattue)',
+        'Taille des roues avant (pouces)',
+        'Puissance réelle maxi (ch)',
+        'Vitesse maximale (km/h)',
+        '0 à 100 km/h (secondes)',
+        'Conso Urbain (format : L/100 km - kWh/100 km)',
+        'Conso Mixte (format : L/100 km - kWh/100 km)',
+        'Conso Extra (format : L/100 km - kWh/100 km)',
+        'Réservoir (L)',
+        'Architecture (type de motorisation / de moteur électrique)',
+    ];
+
+    // Google "udm" parameter value that opens AI Mode instead of the classic results page
+    const GOOGLE_AI_MODE_UDM = '50';
+
+    const SPARKLE_PATH = 'M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z';
+
     // Remove blacklisted strings from a value before adding it to the query
     function sanitiseQueryPart(value) {
         let result = value;
@@ -46,13 +100,13 @@
     let injecting = false;
 
     // Create an SVG icon element
-    function createSVGIcon(pathData, color) {
+    function createSVGIcon(pathData, colour, size = 20) {
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('width', '20');
-        svg.setAttribute('height', '20');
+        svg.setAttribute('width', String(size));
+        svg.setAttribute('height', String(size));
         svg.setAttribute('viewBox', '0 0 24 24');
         svg.setAttribute('fill', 'none');
-        svg.setAttribute('stroke', color);
+        svg.setAttribute('stroke', colour);
         svg.setAttribute('stroke-width', '2');
         svg.setAttribute('stroke-linecap', 'round');
         svg.setAttribute('stroke-linejoin', 'round');
@@ -66,6 +120,47 @@
         svg.appendChild(path);
 
         return svg;
+    }
+
+    // Create a small coloured text badge used as an icon (e.g. "CA", "LC")
+    function createTextBadge(label, colour) {
+        const badge = document.createElement('span');
+        badge.textContent = label;
+        badge.style.cssText = [
+            'display:inline-flex',
+            'align-items:center',
+            'justify-content:center',
+            'min-width:20px',
+            'height:20px',
+            'padding:0 4px',
+            'margin-left:8px',
+            'border-radius:4px',
+            `background:${colour}`,
+            'color:#fff',
+            'font:bold 11px/1 Arial, sans-serif',
+            'cursor:pointer',
+            'flex-shrink:0',
+            'user-select:none',
+        ].join(';');
+        return badge;
+    }
+
+    // Open a Google search in a new tab (classic results or AI Mode)
+    function openGoogleSearch(query, aiMode = false) {
+        const params = new URLSearchParams({ q: query });
+        if (aiMode) {
+            params.set('udm', GOOGLE_AI_MODE_UDM);
+        }
+        window.open(`https://www.google.com/search?${params.toString()}`, '_blank', 'noopener');
+    }
+
+    // Attach a click handler that blocks the default Leboncoin behaviour
+    function bindClick(element, handler) {
+        element.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            handler();
+        });
     }
 
     // Check whether the current listing is a car ad
@@ -82,42 +177,21 @@
         return false;
     }
 
-    // Extract the ad title text
-    function getAdTitle() {
-        const selectors = [
-            'h1[data-testid="ad-title"]',
-            'h1[data-test-id="ad-title"]',
-            'h1.text-headline-1',
-            'h1.text-title-1',
-            'h1._1KQme',
-            'h1',
-        ];
-        for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el && el.textContent.trim()) {
-                return el.textContent.trim();
-            }
-        }
-        return null;
-    }
-
     // Find the title DOM element
     function getTitleElement() {
-        const selectors = [
-            'h1[data-testid="ad-title"]',
-            'h1[data-test-id="ad-title"]',
-            'h1.text-headline-1',
-            'h1.text-title-1',
-            'h1._1KQme',
-            'h1',
-        ];
-        for (const sel of selectors) {
+        for (const sel of TITLE_SELECTORS) {
             const el = document.querySelector(sel);
             if (el && el.textContent.trim()) {
                 return el;
             }
         }
         return null;
+    }
+
+    // Extract the ad title text
+    function getAdTitle() {
+        const el = getTitleElement();
+        return el ? el.textContent.trim() : null;
     }
 
     // Extract the VALUE (right column) from a criteria block by its data-qa-id.
@@ -198,21 +272,71 @@
         return extras.length > 0 ? `${cleanTitle} ${extras.join(' ')}` : cleanTitle;
     }
 
-    // Create the Argus search icon
-    function createArgusIcon(title) {
-        const icon = createSVGIcon(
-            'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z',
-            '#ff6b35'
-        );
-        icon.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            const query = `${buildEnrichedQuery(title)} fiche argus`;
-            console.log('[SearchHelper] Argus query:', query);
-            window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
+    // Build the prompt sent to Google AI Mode to obtain the technical table
+    function buildAiPrompt(vehicle) {
+        const rows = AI_TABLE_ROWS.map((row, index) => `${index + 1}. ${row}`).join('\n');
+        return [
+            `Fiche technique du véhicule suivant : ${vehicle}.`,
+            'Réponds uniquement par un tableau à 2 colonnes (Caractéristique | Valeur) contenant exactement ces lignes, dans cet ordre :',
+            rows,
+            'Si une donnée est introuvable ou incertaine, écris N/A. Ne fais aucune phrase d’introduction.',
+            'Indique tes sources sous le tableau.',
+        ].join('\n');
+    }
+
+    // Create a spec-sheet search icon (Argus, Caradisiac, La Centrale...)
+    function createSpecSheetIcon(source, title) {
+        const icon = source.iconPath
+            ? createSVGIcon(source.iconPath, source.colour)
+            : createTextBadge(source.badge, source.colour);
+
+        bindClick(icon, function() {
+            const query = `${buildEnrichedQuery(title)} ${source.suffix}`;
+            console.log(`[SearchHelper] ${source.tooltip}:`, query);
+            openGoogleSearch(query);
         });
-        icon.title = 'Rechercher la fiche Argus';
+
+        // SVG elements do not support the "title" property: use a <title> child instead
+        if (icon instanceof SVGElement) {
+            const svgTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+            svgTitle.textContent = source.tooltip;
+            icon.prepend(svgTitle);
+        } else {
+            icon.title = source.tooltip;
+        }
         return icon;
+    }
+
+    // Create the Google AI Mode button returning a technical table
+    function createAiButton(title) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.title = 'Demander la fiche technique à l’IA de Google';
+        button.style.cssText = [
+            'display:inline-flex',
+            'align-items:center',
+            'gap:4px',
+            'margin-left:8px',
+            'padding:2px 8px',
+            'border:1px solid #8e44ad',
+            'border-radius:12px',
+            'background:#fff',
+            'color:#8e44ad',
+            'font:bold 12px/1.4 Arial, sans-serif',
+            'cursor:pointer',
+            'flex-shrink:0',
+        ].join(';');
+
+        const icon = createSVGIcon(SPARKLE_PATH, '#8e44ad', 14);
+        icon.style.marginLeft = '0';
+        button.append(icon, document.createTextNode('Fiche IA'));
+
+        bindClick(button, function() {
+            const prompt = buildAiPrompt(buildEnrichedQuery(title));
+            console.log('[SearchHelper] AI prompt:', prompt);
+            openGoogleSearch(prompt, true);
+        });
+        return button;
     }
 
     // Create the generic Google search icon
@@ -221,11 +345,7 @@
             'm15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4m-5-4l5-5-5-5m-5 9h11',
             '#4285f4'
         );
-        icon.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            window.open(`https://www.google.com/search?q=${encodeURIComponent(title)}`, '_blank');
-        });
+        bindClick(icon, () => openGoogleSearch(title));
         icon.title = 'Rechercher sur Google';
         return icon;
     }
@@ -251,7 +371,9 @@
                 return;
             }
 
-            if (isCarAd()) {
+            const carAd = isCarAd();
+
+            if (carAd) {
                 await expandCriteriaIfNeeded();
             }
 
@@ -264,8 +386,11 @@
             container.className = 'search-helper-icon';
             container.style.cssText = 'display:inline-flex;align-items:center;margin-right:10px;vertical-align:middle;';
 
-            if (isCarAd()) {
-                container.appendChild(createArgusIcon(adTitle));
+            if (carAd) {
+                for (const source of SPEC_SHEET_SOURCES) {
+                    container.appendChild(createSpecSheetIcon(source, adTitle));
+                }
+                container.appendChild(createAiButton(adTitle));
             } else {
                 container.appendChild(createGoogleIcon(adTitle));
             }
