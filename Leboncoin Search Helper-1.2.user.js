@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Leboncoin Search Helper
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.5
 // @description  Adds Google, Argus, Caradisiac, La Centrale, Encycarpedia and Google AI search links on Leboncoin car listings
 // @author       You
 // @match        https://www.leboncoin.fr/ad/*
@@ -43,13 +43,13 @@
     ];
 
     // Spec-sheet search sources displayed on car ads (array order = display order).
-    // Either "iconPath" (SVG icon) or "badge" (short text label) is used for rendering.
+    // Each source is rendered as a short coloured text badge.
     const SPEC_SHEET_SOURCES = [
         {
-            suffix:   'fiche argus',
-            colour:   '#ff6b35',
-            tooltip:  'Rechercher la fiche Argus',
-            iconPath: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z',
+            suffix:  'fiche argus',
+            colour:  '#ff6b35',
+            tooltip: 'Rechercher la fiche Argus',
+            badge:   'AR',
         },
         {
             suffix:  'fiche technique caradisiac',
@@ -71,20 +71,27 @@
         },
     ];
 
-    // Rows requested from Google AI Mode (same layout as the "Informations Techniques" panel)
+    // Colour scale shared with the "Informations Techniques" panel (rendered as emoji dots by the AI)
+    const AI_COLOUR_LEGEND = '🟢 bon, 🟠 moyen, 🔴 mauvais, ⚫ très mauvais, ⚪ N/A ou sans seuil';
+
+    // Thresholds shared by the three fuel consumption rows (fuel - electric)
+    const CONSUMPTION_COLOURS = '🟢 ≤5 L et ≤15 kWh ; 🟠 ≤6.5 L et ≤18 kWh ; 🔴 ≤8 L et ≤22 kWh ; ⚫ au-delà';
+
+    // Rows requested from Google AI Mode (same layout and colour rules as the "Informations Techniques" panel).
+    // Adjust the thresholds in "colours" to match the panel exactly.
     const AI_TABLE_ROWS = [
-        'Longueur / Largeur (format : 4.42m - 1.83m)',
-        'Poids à vide (kg)',
-        'Volume de coffre + volume utile (format : 475L - 1600L, volume utile = banquette rabattue)',
-        'Taille des roues avant (pouces)',
-        'Puissance réelle maxi (ch)',
-        'Vitesse maximale (km/h)',
-        '0 à 100 km/h (secondes)',
-        'Conso Urbain (format : L/100 km - kWh/100 km)',
-        'Conso Mixte (format : L/100 km - kWh/100 km)',
-        'Conso Extra (format : L/100 km - kWh/100 km)',
-        'Réservoir (L)',
-        'Architecture (type de motorisation / de moteur électrique)',
+        { label: 'Longueur / Largeur',              format: '4.42m - 1.83m',          colours: '🟢 L≤4.30m et l≤1.78m ; 🟠 L≤4.40m et l≤1.80m ; 🔴 L≤4.60m ; ⚫ au-delà' },
+        { label: 'Poids à vide',                    format: '1250 kg',                colours: '🟢 ≤1300 ; 🟠 ≤1500 ; 🔴 ≤1700 ; ⚫ >1700' },
+        { label: 'Volume de coffre + volume utile', format: '475L - 1600L (banquette rabattue)', colours: '🟢 coffre ≥450L ; 🟠 ≥380L ; 🔴 ≥300L ; ⚫ <300L' },
+        { label: 'Taille des roues avant',          format: '17"',                    colours: '🟢 ≤16" ; 🟠 17" ; 🔴 18" ; ⚫ ≥19"' },
+        { label: 'Puissance réelle maxi',           format: '204 ch',                 colours: '🟢 ≥150 ; 🟠 ≥120 ; 🔴 ≥90 ; ⚫ <90' },
+        { label: 'Vitesse maximale',                format: '167 km/h',               colours: '🟢 ≥190 ; 🟠 ≥180 ; 🔴 ≥170 ; ⚫ <170' },
+        { label: '0 à 100 km/h',                    format: '8.5 s',                  colours: '🟢 ≤8 ; 🟠 ≤10 ; 🔴 ≤12 ; ⚫ >12' },
+        { label: 'Conso Urbain',                    format: '5.2 L/100 km - 16 kWh/100 km', colours: CONSUMPTION_COLOURS },
+        { label: 'Conso Mixte',                     format: '5.2 L/100 km - 16 kWh/100 km', colours: CONSUMPTION_COLOURS },
+        { label: 'Conso Extra',                     format: '5.2 L/100 km - 16 kWh/100 km', colours: CONSUMPTION_COLOURS },
+        { label: 'Réservoir',                       format: '45 L',                   colours: '🟢 ≥50 ; 🟠 ≥40 ; 🔴 ≥30 ; ⚫ <30' },
+        { label: 'Architecture',                    format: 'type de motorisation / de moteur électrique', colours: '⚪ toujours' },
     ];
 
     // Google "udm" parameter value that opens AI Mode instead of the classic results page
@@ -280,36 +287,30 @@
 
     // Build the prompt sent to Google AI Mode to obtain the technical table
     function buildAiPrompt(vehicle) {
-        const rows = AI_TABLE_ROWS.map((row, index) => `${index + 1}. ${row}`).join('\n');
+        const rows = AI_TABLE_ROWS
+            .map((row, index) => `${index + 1}. ${row.label} (format : ${row.format}) → ${row.colours}`)
+            .join('\n');
         return [
             `Fiche technique du véhicule suivant : ${vehicle}.`,
-            'Réponds uniquement par un tableau à 2 colonnes (Caractéristique | Valeur) contenant exactement ces lignes, dans cet ordre :',
+            'Réponds uniquement par un tableau à 2 colonnes (Caractéristique | Valeur) contenant exactement ces lignes, dans cet ordre, avec les seuils de couleur indiqués après la flèche :',
             rows,
-            'Si une donnée est introuvable ou incertaine, écris N/A. Ne fais aucune phrase d’introduction.',
+            `Préfixe chaque valeur d’une pastille de couleur selon ces seuils (${AI_COLOUR_LEGEND}).`,
+            'Quand une ligne contient deux valeurs, mets une pastille devant chacune.',
+            'Si une donnée est introuvable ou incertaine, écris ⚪ N/A. Ne fais aucune phrase d’introduction.',
             'Indique tes sources sous le tableau.',
         ].join('\n');
     }
 
     // Create a spec-sheet search icon (Argus, Caradisiac, La Centrale...)
     function createSpecSheetIcon(source, title) {
-        const icon = source.iconPath
-            ? createSVGIcon(source.iconPath, source.colour)
-            : createTextBadge(source.badge, source.colour);
+        const icon = createTextBadge(source.badge, source.colour);
+        icon.title = source.tooltip;
 
         bindClick(icon, function() {
             const query = `${buildEnrichedQuery(title)} ${source.suffix}`;
             console.log(`[SearchHelper] ${source.tooltip}:`, query);
             openGoogleSearch(query);
         });
-
-        // SVG elements do not support the "title" property: use a <title> child instead
-        if (icon instanceof SVGElement) {
-            const svgTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            svgTitle.textContent = source.tooltip;
-            icon.prepend(svgTitle);
-        } else {
-            icon.title = source.tooltip;
-        }
         return icon;
     }
 
